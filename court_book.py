@@ -6,261 +6,256 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from webdriver_manager.chrome import ChromeDriverManager
-from selenium.common.exceptions import StaleElementReferenceException, TimeoutException
+from selenium.common.exceptions import TimeoutException
 import time
-import smtplib
-from email.mime.text import MIMEText
-from email.mime.multipart import MIMEMultipart
-
 from dotenv import load_dotenv
 import os
+from datetime import datetime, timedelta
+import argparse
+
+# --- ARGUMENT PARSING WITH NEW OPTION ---
+parser = argparse.ArgumentParser(description="Book a UCI court for a specific day.")
+parser.add_argument(
+    'day_to_book',
+    type=str,
+    nargs='?',  # <-- Makes the argument optional
+    default='day-after', # <-- Sets the default value
+    choices=['today', 'tomorrow', 'day-after'],
+    help="Specify booking day: 'today', 'tomorrow', or 'day-after'. Defaults to 'day-after'."
+)
+parser.add_argument(
+    '-n', '--num-bookings',
+    type=int,
+    default=2,
+    choices=[1, 2], # You can expand this list, e.g., [1, 2, 3]
+    help='Number of slots to book (default: 2.'
+)
+args = parser.parse_args()
 
 load_dotenv()
 uci_id = os.getenv("UCI_ID")
 uci_password = os.getenv("UCI_PASSWORD")
 
-# Setup Chrome options
+# --- Browser Setup ---
 options = webdriver.ChromeOptions()
-options.add_argument("--start-maximized")
 
-# # Setup Chrome options for headless environment
-# options = webdriver.ChromeOptions()
-# options.add_argument('--headless')
-# options.add_argument('--no-sandbox')
-# options.add_argument('--disable-dev-shm-usage')
-# options.add_argument('--disable-gpu')
-# options.add_argument('--window-size=1920,1080')
 
-# Use Service object
+# Option1: If you want GUI
+# options.add_argument("--start-maximized")
+
+# Option2: If you want GUI
+options.add_argument("--headless")  # <-- Run Chrome in the background
+options.add_argument("--window-size=1920,1080") # <-- Set a virtual window size
+options.add_argument("--no-sandbox") # Often needed for running as root or in cron
+options.add_argument("--disable-dev-shm-usage") # Overcomes limited resource issues
+
+
 service = Service(ChromeDriverManager().install())
 driver = webdriver.Chrome(service=service, options=options)
-
-# Open the pickleball booking page
 driver.get("https://my.campusrec.uci.edu/booking")
+wait = WebDriverWait(driver, 20)
 
-wait = WebDriverWait(driver, 10)
 
-# STEP 2: Click on the pickleball image
-wait.until(EC.element_to_be_clickable((By.CLASS_NAME, "container-image-link-item"))).click()
 
-# STEP 3: Click the UCI NetID login button
+# --- Login and Duo Steps ---
+print(">>> Starting Login Process...")
 try:
-    uci_button = wait.until(EC.element_to_be_clickable((
-        By.CSS_SELECTOR, "button.btn-sso-shibboleth"
-    )))
+    wait.until(EC.element_to_be_clickable((By.CLASS_NAME, "container-image-link-item"))).click()
+    uci_button = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, "button.btn-sso-shibboleth")))
     uci_button.click()
-except Exception as e:
-    print("❌ Could not find or click UCI NetID login button")
-    driver.save_screenshot("error_login_button.png")
-    raise e
-
-# Wait for UCI login page to load and fill credentials manually
-print("🔐 Please complete UCI login and approve Duo request on your phone...")
-try:
-    wait.until(EC.presence_of_element_located((By.ID, "j_username"))).send_keys(uci_id)  # Replace with your UCInetID
-    wait.until(EC.presence_of_element_located((By.ID, "j_password"))).send_keys(uci_password)  # Replace securely
+    print("🔐 Please complete UCI login and approve Duo request on your phone...")
+    wait.until(EC.presence_of_element_located((By.ID, "j_username"))).send_keys(uci_id)
+    wait.until(EC.presence_of_element_located((By.ID, "j_password"))).send_keys(uci_password)
     wait.until(EC.element_to_be_clickable((By.NAME, "submit_form"))).click()
     print("🔐 Submitted UCInetID and password.")
+    print("📲 Waiting for Duo push approval...")
+    WebDriverWait(driver, 180).until(EC.element_to_be_clickable((By.ID, "trust-browser-button"))).click()
+    print("🔒 Clicked 'Yes, this is my device'")
+    print("✅ Duo approved and dashboard loaded")
+    wait.until(EC.element_to_be_clickable((By.CLASS_NAME, "container-image-link-item"))).click()
+    time.sleep(1)
 except Exception as e:
-    print("❌ Failed to submit UCI credentials.")
-    driver.save_screenshot("error_ucinetid_login.png")
-    raise e
+    print(f"❌ An error occurred during login: {e}")
+    driver.quit()
+    exit()
 
+# --- Date Selection ---
+today = datetime.now()
+days_to_add = {'today': 0, 'tomorrow': 1, 'day-after': 2}[args.day_to_book]
+target_date = today + timedelta(days=days_to_add)
+target_day = target_date.day
+print(f"\n>>> Selecting Date: {args.day_to_book.upper()} ({target_date.strftime('%A, %b %d')})")
 
 try:
-    print("📲 Waiting for Duo push approval...")
-    WebDriverWait(driver, 180).until(
-        EC.element_to_be_clickable((By.ID, "trust-browser-button"))
-    ).click()
-    print("🔒 Clicked 'Yes, this is my device'")
-except Exception as e:
-    print("⚠️ 'Yes, this is my device' button not shown or click failed (possibly already trusted).")
-    driver.save_screenshot("duo_device_trust_failed.png")
-
-print("✅ Duo approved and dashboard loaded")
-
-# Wait until correct date is selected (e.g., tomorrow or specific date)
-# Optional: Modify this to dynamically click the appropriate date tab
-time.sleep(1)
-wait.until(EC.element_to_be_clickable((By.CLASS_NAME, "container-image-link-item"))).click()
-time.sleep(1)
-
-# Get today's date and add 2 days
-# book_for_date = 5
-from datetime import datetime, timedelta
-today = datetime.now()
-book_for_date = (today + timedelta(days=2)).day
-# book_for_date = 7
-print(f"📅 Booking for date: {book_for_date}")
+    target_button_selector = f"div.d-none.d-lg-block button.single-date-select-button[data-day='{target_day}']"
+    print(f"🔍 Waiting for the DESKTOP button for day '{target_day}' to become clickable...")
+    target_button = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, target_button_selector)))
+    target_button.click()
+    print(f"✅ Clicked button for day '{target_day}'.")
+    time.sleep(2)
+except TimeoutException:
+    print(f"❌ Timed out waiting for the date button for the {target_day}th. It may not be available for booking.")
+    driver.quit()
+    exit()
 
 
-# date_buttons = driver.find_elements(By.CLASS_NAME, "d-flex justify-content-center buttons")
-date_buttons = driver.find_elements(By.CSS_SELECTOR, "div.d-flex.justify-content-center button.single-date-select-button")
-# if last element of date_buttons attribute value is < book_for_date then reload the page and get date_buttons again
-latest_date = int(date_buttons[-1].get_attribute("data-day"))
-refresh_count = 0
-while latest_date < book_for_date:
-    print(f"⚠️ Latest date {latest_date} is less than {book_for_date}. Reloading page.... Current refresh count: {refresh_count}")
-    driver.refresh()
-    refresh_count += 1
-    time.sleep(1)
-    date_buttons = driver.find_elements(By.CSS_SELECTOR, "div.d-flex.justify-content-center button.single-date-select-button")
-    if len(date_buttons) == 0:
-        continue
-    latest_date = int(date_buttons[-1].get_attribute("data-day"))
 
-print(f"📅 Found {len(date_buttons)} date buttons.")
-# reverse for loop on date_buttons
-button = date_buttons[-1]
-button.get_attribute("data-day")
-print(f"📅 Clicking date button for {button.get_attribute('data-day')}")
-button.click()
-time.sleep(1)
 
+
+
+# --- MULTI-BOOKING STRATEGY (WITH OPTIMIZATIONS) ---
+
+# Define your exact preference order
+preferred_times = [
+    "6 - 7 PM", "7 - 8 PM", "8 - 8:55 PM", "7 - 8 AM", "11 AM - 12 PM",
+    "12 - 1 PM", "9 - 10 AM", "10 - 11 AM"
+]
+
+booked_slots_list = []
+# OPTIMIZATION: Create a longer wait specifically for post-booking confirmation
+wait_for_booking = WebDriverWait(driver, 10) 
+
+# NEW: PRIORITY PASS for first two preferences
+print("\n>>> PRIORITY PASS: Checking for top 2 preferences for immediate booking...")
+top_2_prefs = preferred_times[:2]
+
+# OPTIMIZATION: Find the facility tabs once at the start of the pass
 facility_buttons = driver.find_elements(By.CSS_SELECTOR, "#tabBookingFacilities button")
-print(f"🛠️ Found {len(facility_buttons)} facilities to check...")
 
-booked_slots_count = 0
-max_slots_to_book = 10
-booked_times = []  # Track which times have been booked
-
-preferred_times = ["5 - 6 PM", "6 - 7 PM", "7 - 8 PM", "8 - 9 PM", "9 - 9:55 PM"]
-
-for i in range(len(facility_buttons)):
+for facility_button in facility_buttons:
+    if len(booked_slots_list) >= args.num_bookings:
+        print("--- Desired number of bookings reached during priority pass.")
+        break
+    
     try:
-        # Re-locate buttons in case DOM refreshed
-        facility_buttons = driver.find_elements(By.CSS_SELECTOR, "#tabBookingFacilities button")
-        facility_buttons[i].click()
-        print(f"\n🔍 Checking facility {i+1}/{len(facility_buttons)}...")
+        driver.execute_script("arguments[0].click();", facility_button)
+        facility_name = facility_button.text.strip()
+        print(f"--- Scanning facility for priority slots: {facility_name}...")
+        
+        # OPTIMIZATION: Instead of a fixed sleep, wait for the slot elements to load.
+        # This is faster and more reliable than time.sleep(1.5).
+        wait.until(EC.presence_of_all_elements_located((By.CLASS_NAME, "booking-slot-item")))
 
-        # Wait extra time for DOM + network latency
-        time.sleep(1)
+        for pref_time in top_2_prefs:
+            if len(booked_slots_list) >= args.num_bookings: break
+            if pref_time in booked_slots_list: continue
 
-        # Ensure booking slots are loaded
-        WebDriverWait(driver, 15).until(
-            EC.presence_of_element_located((By.CLASS_NAME, "booking-slot-item"))
-        )
-
-        slots = driver.find_elements(By.CLASS_NAME, "booking-slot-item")
-        print(f"📦 Found {len(slots)} booking slots.")
-
-        for slot in slots:
             try:
-                time_label = slot.find_element(By.TAG_NAME, "p").text.strip()
-                print(f"🕒 Slot time: {time_label}")
-                if any(pref in time_label for pref in preferred_times) and time_label not in booked_times:
-                    button = slot.find_element(By.CLASS_NAME, "booking-slot-action-item").find_element(By.TAG_NAME, "button")
-                    if "disabled" not in button.get_attribute("class"):
-                        print(f"🎯 Available slot for '{time_label}' — booking...")
-                        button.click()
-                        booked_times.append(time_label)
-                        print(f"✅ Slot booked ({booked_slots_count + 1}/{max_slots_to_book}).")
-                        booked_slots_count += 1
-                        if booked_slots_count >= max_slots_to_book:
-                            print(f"🎉 Successfully booked {booked_slots_count} slots. Exiting.")
-                            exit(0)
-                        else:
-                            print(f"🔍 Continuing to search for {max_slots_to_book - booked_slots_count} more slots...")
-                            # Wait for page to update after booking
-                            continue  # Move to next slot
-                elif time_label in booked_times:
-                    print(f"⏭️ Skipping '{time_label}' - already booked a slot at this time.")
+                xpath_for_button = f"//div[contains(@class, 'booking-slot-item') and .//strong[normalize-space()='{pref_time}']]//button[normalize-space()='Book Now']"
+                button_to_click = WebDriverWait(driver, 0.5).until(EC.element_to_be_clickable((By.XPATH, xpath_for_button)))
+                
+                print(f"🎯 Priority slot found! Attempting to book '{pref_time}' on '{facility_name}'.")
+                button_to_click.click()
 
-            except (StaleElementReferenceException, TimeoutException):
-                print("⚠️ Slot became stale or failed to load.")
-                continue
+                # OPTIMIZATION: Instead of time.sleep(4), wait for the button to disappear or change.
+                # This is the most reliable way to confirm the booking was processed.
+                print("   -> Waiting for booking confirmation...")
+                wait_for_booking.until(EC.staleness_of(button_to_click))
+                
+                print(f"✅ Slot {len(booked_slots_list) + 1}/{args.num_bookings} booked successfully: {pref_time}")
+                booked_slots_list.append(pref_time)
+                # No sleep needed here now.
 
+            except TimeoutException:
+                pass # Expected if slot not found
+            except Exception as e:
+                print(f"⚠️ An error occurred while trying to book priority slot '{pref_time}': {e}")
     except Exception as e:
-        print(f"⚠️ Error on facility tab {i+1}: {e}")
+        print(f"⚠️ An error occurred while scanning a facility during priority pass: {e}")
         continue
 
-# 3. Add this at the end of your script
-if booked_slots_count > 0:
-    print(f"✓ Booking completed with {booked_slots_count}/{max_slots_to_book} slots booked.")
+# Check if we still need to book more slots
+if len(booked_slots_list) < args.num_bookings:
+    print(f"\n>>> Priority pass complete. Booked {len(booked_slots_list)} slot(s).")
+    print(f">>> Proceeding to standard scan to fulfill remaining {args.num_bookings - len(booked_slots_list)} booking(s).")
+    
+    # PASS 1: GATHER ALL REMAINING AVAILABLE SLOTS
+    print("\n>>> PASS 1: Gathering all remaining available slots from all facilities...")
+    available_slots_info = {}
+    facility_buttons = driver.find_elements(By.CSS_SELECTOR, "#tabBookingFacilities button")
+
+    for facility_button in facility_buttons:
+        try:
+            driver.execute_script("arguments[0].click();", facility_button)
+            facility_name = facility_button.text.strip()
+            print(f"--- Scanning facility: {facility_name}...")
+            wait.until(EC.presence_of_all_elements_located((By.CLASS_NAME, "booking-slot-item")))
+            
+            slots_on_page = driver.find_elements(By.CLASS_NAME, "booking-slot-item")
+            for slot in slots_on_page:
+                book_button = slot.find_element(By.CSS_SELECTOR, "button")
+                if book_button.text.strip().upper() == 'BOOK NOW':
+                    time_label = slot.find_element(By.CSS_SELECTOR, "p > strong").text.strip()
+                    if time_label not in booked_slots_list and time_label not in available_slots_info:
+                        available_slots_info[time_label] = facility_name
+                        print(f"    -> Found available slot: '{time_label}' on '{facility_name}'")
+        except Exception as e:
+            print(f"⚠️ An error occurred while scanning a facility: {e}")
+            continue
+
+    # PASS 2: DECIDE AND BOOK MULTIPLE SLOTS from the remaining options
+    print(f"\n>>> PASS 2: Analyzing remaining slots to book up to {args.num_bookings} total slot(s)...")
+    
+    while len(booked_slots_list) < args.num_bookings:
+        best_slot_to_book = None
+        for pref_time in preferred_times:
+            if pref_time in available_slots_info:
+                best_slot_to_book = pref_time
+                break
+        
+        if not best_slot_to_book:
+            print("--- No more available slots match your preferences.")
+            break
+            
+        target_facility_name = available_slots_info[best_slot_to_book]
+        print(f"🎯 Top preference found! Attempting to book '{best_slot_to_book}' on '{target_facility_name}'.")
+        
+        try:
+            all_facility_tabs = driver.find_elements(By.CSS_SELECTOR, "#tabBookingFacilities button")
+            for tab in all_facility_tabs:
+                if tab.text.strip() == target_facility_name:
+                    driver.execute_script("arguments[0].click();", tab)
+                    wait.until(EC.presence_of_all_elements_located((By.CLASS_NAME, "booking-slot-item")))
+                    break
+            
+            xpath_for_button = f"//div[contains(@class, 'booking-slot-item') and .//strong[normalize-space()='{best_slot_to_book}']]//button[normalize-space()='Book Now']"
+            button_to_click = wait.until(EC.element_to_be_clickable((By.XPATH, xpath_for_button)))
+            
+            button_to_click.click()
+            
+            print("   -> Waiting for booking confirmation...")
+            wait_for_booking.until(EC.staleness_of(button_to_click))
+            
+            print(f"✅ Slot {len(booked_slots_list) + 1}/{args.num_bookings} booked successfully: {best_slot_to_book}")
+            booked_slots_list.append(best_slot_to_book)
+            del available_slots_info[best_slot_to_book]
+            
+        except Exception as e:
+            print(f"❌ Failed to book the slot for '{best_slot_to_book}'. Error: {e}")
+            del available_slots_info[best_slot_to_book]
+            continue
 else:
-    print("\n❌ No available slots found in any facility.")
-
-# Optional: send email/notification on success or failure
-# Cleanup
-# driver.quit()
+    print("\n>>> All desired bookings were fulfilled during the priority pass.")
 
 
-def send_email(subject, message, recipients, only_to_you_on_failure=False):
-    """
-    Send email notification about booking results
 
-    Parameters:
-    - subject: Email subject line
-    - message: Email body content
-    - recipients: List of email addresses to send to
-    - only_to_you_on_failure: If True and 'failure' is in subject, only send to first recipient
-    """
-    sender_email = os.getenv("EMAIL_ADDRESS")  # Add this to your .env file
-    sender_password = os.getenv("EMAIL_PASSWORD")  # Add this to your .env file
 
-    # Check if this is a failure message and only_to_you_on_failure is True
-    if only_to_you_on_failure and "failure" in subject.lower():
-        recipients = [recipients[0]]  # Only send to your email (first in list)
 
-    # Create message
-    msg = MIMEMultipart()
-    msg['From'] = sender_email
-    msg['To'] = ", ".join(recipients)
-    msg['Subject'] = subject
 
-    # Attach message body
-    msg.attach(MIMEText(message, 'plain'))
 
-    try:
-        # Gmail SMTP server and port
-        server = smtplib.SMTP('smtp.gmail.com', 587)
-        server.starttls()  # Enable TLS encryption
 
-        # Login with your Gmail credentials
-        server.login(sender_email, sender_password)
 
-        # Send email
-        server.sendmail(sender_email, recipients, msg.as_string())
-        server.quit()
-        print(f"✉️ Email notification sent to {', '.join(recipients)}")
-    except Exception as e:
-        print(f"❌ Failed to send email: {e}")
-
-# Email recipients
-your_email = "moniln@uci.edu"  # Replace with your email
-friend_email = "shubhij1@uci.edu"  # Replace with your friend's email
-recipients = [your_email, friend_email]
-
-# Summary and email notification
-if booked_slots_count > 0:
-    # Success message
-    success_message = f"✓ Pickleball Booking Completed!\n\n"
-    success_message += f"Successfully booked {booked_slots_count} slots:\n\n"
-
-    # Add details for each booked slot
-    for i, time_slot in enumerate(booked_times):
-        success_message += f"{i+1}. Time: {time_slot}\n"
-
-    print(success_message)
-
-    # Send success email to both you and your friend
-    send_email(
-        subject="Pickleball Court Booking Success",
-        message=success_message,
-        recipients=recipients
-    )
+# --- FINAL SUMMARY ---
+print("\n--------------------")
+print("Booking Summary:")
+if booked_slots_list:
+    print(f"✅ Successfully booked {len(booked_slots_list)} slot(s):")
+    for t in booked_slots_list:
+        print(f"  - {t}")
 else:
-    # Failure message
-    failure_message = "❌ No available slots found in any facility."
-    print(failure_message)
+    print("❌ No slots matching your preferences were found available.")
+print("--------------------")
 
-    # Send failure email only to you
-    send_email(
-        subject="Pickleball Court Booking Failure",
-        message=failure_message,
-        recipients=recipients,
-        only_to_you_on_failure=True
-    )
-
-
-
+print("Script finished. Closing browser.")
+time.sleep(5)
+driver.quit()
