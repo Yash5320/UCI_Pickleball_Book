@@ -192,6 +192,6 @@ cd ~/Scripts/pickleball_booking_cron && pwd # Example: /Users/your_username/Scri
 ```
   - Load the Job: In Terminal, run launchctl load `~/Library/LaunchAgents/com.myname.ucibooker.plist`. The job is now scheduled.
 ## ⚠️ Important Notes
-Duo Push: The script waits up to 180 seconds for you to approve the Duo Push notification on your mobile device during the login process.
-Website Changes: This script is dependent on the website's structure. If the UCI Campus Rec portal is updated, this script may break and will require maintenance.
-Ethical Use: This tool is for personal convenience. Please use it responsibly.
+- Duo Push: The script waits up to 180 seconds for you to approve the Duo Push notification on your mobile device during the login process.
+- Website Changes: This script is dependent on the website's structure. If the UCI Campus Rec portal is updated, this script may break and will require maintenance.
+- Ethical Use: This tool is for personal convenience. Please use it responsibly.
